@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Dieci · Conteggio clienti</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; user-select: none; }
+  html, body { margin: 0; padding: 0; height: 100%; width: 100%; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; background: #fff; color: #111; overflow: hidden; }
+  body { display: flex; flex-direction: column; padding: 8px; gap: 6px; }
+  h1 { margin: 0; padding: 6px 4px; font-size: 18px; font-weight: 600; color: #111; }
+  .btn {
+    flex: 1 1 0;
+    border: none;
+    border-radius: 14px;
+    color: #fff;
+    text-align: center;
+    padding: 8px;
+    cursor: pointer;
+    font-family: inherit;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    transition: filter 150ms ease;
+    -webkit-user-select: none;
+    min-height: 0;
+  }
+  .btn:active { filter: brightness(0.9); }
+  .btn.flash { filter: brightness(1.25); }
+  .btn .label { font-size: 34px; font-weight: 800; letter-spacing: 0.5px; line-height: 1.05; text-transform: uppercase; }
+  .btn .sub { font-size: 18px; font-weight: 500; opacity: 0.95; margin-top: 6px; line-height: 1.1; }
+  .btn .err { display: none; margin-top: 8px; font-size: 14px; font-weight: 600; background: rgba(0,0,0,0.25); padding: 4px 10px; border-radius: 999px; }
+  .btn.error .err { display: inline-block; }
+  .btn-mai { background: #9CA3AF; }
+  .btn-ogni { background: #F59E0B; }
+  .btn-reg { background: #EA580C; }
+  .counter { font-size: 16px; padding: 6px 4px; color: #222; font-weight: 500; text-align: center; }
+  .undo {
+    border: none;
+    border-radius: 10px;
+    background: #6B7280;
+    color: #fff;
+    padding: 12px;
+    font-size: 16px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .undo:active { filter: brightness(0.9); }
+  .last-save { font-size: 12px; color: #6B7280; text-align: center; padding-bottom: 4px; }
+  .pending { font-size: 12px; color: #B45309; text-align: center; }
+</style>
+</head>
+<body>
+
+<h1>Dieci · Conteggio clienti</h1>
+
+<button class="btn btn-mai" data-cat="mai_visto">
+  <span class="label">Mai visto</span>
+  <span class="sub">cliente nuovo</span>
+  <span class="err">Errore — riprova</span>
+</button>
+
+<button class="btn btn-ogni" data-cat="ogni_tanto">
+  <span class="label">Ogni tanto</span>
+  <span class="sub">meno di 3 volte questo mese</span>
+  <span class="err">Errore — riprova</span>
+</button>
+
+<button class="btn btn-reg" data-cat="regolare">
+  <span class="label">Più di 3 volte questo mese</span>
+  <span class="sub">cliente regolare</span>
+  <span class="err">Errore — riprova</span>
+</button>
+
+<div class="counter" id="counter">Oggi: 0 mai · 0 ogni tanto · 0 regolari</div>
+
+<button class="undo" id="undo">Annulla ultimo tap</button>
+
+<div class="last-save" id="lastSave">Ultimo salvataggio: —</div>
+<div class="pending" id="pending"></div>
+
+<script>
+(function () {
+  const ENDPOINT = "https://script.google.com/macros/s/AKfycbw1IDabAuKaYQ7SLyUmr9XSzL0l48rWsV7OP8sV_nuON1F58qe9ki2eksbqIFFUIbayAA/exec";
+  const DEBOUNCE_MS = 250;
+  const FLASH_MS = 150;
+  const RETRY_INTERVAL_MS = 10000;
+  const DAY_REFRESH_MS = 30000;
+
+  const counterEl = document.getElementById('counter');
+  const undoBtn = document.getElementById('undo');
+  const lastSaveEl = document.getElementById('lastSave');
+  const pendingEl = document.getElementById('pending');
+  const buttons = document.querySelectorAll('.btn');
+
+  function todayKey() {
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return 'dieci_tally_' + yyyy + '-' + mm + '-' + dd;
+  }
+
+  function loadCounts() {
+    try {
+      const raw = localStorage.getItem(todayKey());
+      if (!raw) return { mai_visto: 0, ogni_tanto: 0, regolare: 0, history: [] };
+      const parsed = JSON.parse(raw);
+      return {
+        mai_visto: parsed.mai_visto || 0,
+        ogni_tanto: parsed.ogni_tanto || 0,
+        regolare: parsed.regolare || 0,
+        history: Array.isArray(parsed.history) ? parsed.history : []
+      };
+    } catch (e) {
+      return { mai_visto: 0, ogni_tanto: 0, regolare: 0, history: [] };
+    }
+  }
+
+  function saveCounts(c) {
+    localStorage.setItem(todayKey(), JSON.stringify(c));
+  }
+
+  function renderCounter() {
+    const c = loadCounts();
+    counterEl.textContent = 'Oggi: ' + c.mai_visto + ' mai · ' + c.ogni_tanto + ' ogni tanto · ' + c.regolare + ' regolari';
+  }
+
+  function loadQueue() {
+    try {
+      const raw = localStorage.getItem('dieci_tally_queue');
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveQueue(q) {
+    localStorage.setItem('dieci_tally_queue', JSON.stringify(q));
+  }
+
+  function renderPending() {
+    const q = loadQueue();
+    pendingEl.textContent = q.length > 0 ? ('In attesa di invio: ' + q.length) : '';
+  }
+
+  function showLastSave() {
+    const d = new Date();
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    lastSaveEl.textContent = 'Ultimo salvataggio: ' + hh + ':' + mm + ':' + ss;
+  }
+
+  function flash(btn) {
+    btn.classList.add('flash');
+    setTimeout(function () { btn.classList.remove('flash'); }, FLASH_MS);
+  }
+
+  function showError(btn) {
+    btn.classList.add('error');
+    setTimeout(function () { btn.classList.remove('error'); }, 2000);
+  }
+
+  function sendPost(payload) {
+    return fetch(ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload),
+      redirect: 'follow'
+    }).then(function (res) {
+      if (!res.ok) throw new Error('http ' + res.status);
+      return res.text().then(function (t) {
+        try {
+          const j = JSON.parse(t);
+          if (j && j.ok === false) throw new Error(j.error || 'server error');
+          return j;
+        } catch (e) {
+          return { ok: true };
+        }
+      });
+    });
+  }
+
+  function enqueue(payload) {
+    const q = loadQueue();
+    q.push(payload);
+    saveQueue(q);
+    renderPending();
+  }
+
+  function flushQueue() {
+    let q = loadQueue();
+    if (q.length === 0) return;
+    const next = q[0];
+    sendPost(next).then(function () {
+      q = loadQueue();
+      q.shift();
+      saveQueue(q);
+      renderPending();
+      if (q.length > 0) flushQueue();
+    }).catch(function () { /* keep in queue, retry later */ });
+  }
+
+  let lastTapTime = 0;
+
+  function handleTap(category, btn) {
+    const now = Date.now();
+    if (now - lastTapTime < DEBOUNCE_MS) return;
+    lastTapTime = now;
+
+    flash(btn);
+
+    const c = loadCounts();
+    if (category === 'mai_visto' || category === 'ogni_tanto' || category === 'regolare') {
+      c[category] = (c[category] || 0) + 1;
+      c.history.push(category);
+      saveCounts(c);
+      renderCounter();
+    }
+
+    const payload = { category: category, timestamp: new Date().toISOString() };
+
+    sendPost(payload).then(function () {
+      showLastSave();
+    }).catch(function () {
+      showError(btn);
+      enqueue(payload);
+    });
+  }
+
+  function handleUndo() {
+    const now = Date.now();
+    if (now - lastTapTime < DEBOUNCE_MS) return;
+    lastTapTime = now;
+
+    const c = loadCounts();
+    if (c.history.length === 0) return;
+    const lastCat = c.history.pop();
+    if (c[lastCat] && c[lastCat] > 0) c[lastCat] -= 1;
+    saveCounts(c);
+    renderCounter();
+
+    const payload = { category: 'undo', timestamp: new Date().toISOString() };
+    sendPost(payload).then(function () {
+      showLastSave();
+    }).catch(function () {
+      enqueue(payload);
+    });
+  }
+
+  buttons.forEach(function (btn) {
+    btn.addEventListener('click', function () { handleTap(btn.getAttribute('data-cat'), btn); });
+  });
+  undoBtn.addEventListener('click', handleUndo);
+
+  document.addEventListener('gesturestart', function (e) { e.preventDefault(); });
+  document.addEventListener('dblclick', function (e) { e.preventDefault(); });
+
+  renderCounter();
+  renderPending();
+  setInterval(flushQueue, RETRY_INTERVAL_MS);
+  setInterval(renderCounter, DAY_REFRESH_MS);
+  flushQueue();
+})();
+</script>
+
+</body>
+</html>
